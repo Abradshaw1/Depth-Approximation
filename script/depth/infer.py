@@ -223,7 +223,6 @@ if "__main__" == __name__:
     pipe: MarigoldDepthPipeline = MarigoldDepthPipeline.from_pretrained(
         checkpoint_path, variant=variant, torch_dtype=dtype
     )
-
     try:
         pipe.enable_xformers_memory_efficient_attention()
     except ImportError:

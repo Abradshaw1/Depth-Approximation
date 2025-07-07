@@ -89,15 +89,18 @@ class MarigoldDepthTrainer:
         if 8 != self.model.unet.config["in_channels"]:
             self._replace_unet_conv_in()
 
-        # Encode empty text prompt
-        self.model.encode_empty_text()
-        self.empty_text_embed = self.model.empty_text_embed.detach().clone().to(device)
+        # Encode empty text prompt  old for CLIP
+        # self.model.encode_empty_text()
+        # self.empty_text_embed = self.model.empty_text_embed.detach().clone().to(device)
+
+        # fixed conditioning (no tokenizer/encoder)
+        self.fixed_embed = self.model.fixed_embed.to(device)
 
         self.model.unet.enable_xformers_memory_efficient_attention()
 
         # Trainability
         self.model.vae.requires_grad_(False)
-        self.model.text_encoder.requires_grad_(False)
+        #self.model.text_encoder.requires_grad_(False) for CLIP
         self.model.unet.requires_grad_(True)
 
         # Optimizer !should be defined after input layer is adapted
@@ -294,10 +297,18 @@ class MarigoldDepthTrainer:
                     gt_target_latent, noise, timesteps
                 )  # [B, 4, h, w]
 
-                # Text embedding
-                text_embed = self.empty_text_embed.to(device).repeat(
-                    (batch_size, 1, 1)
-                )  # [B, 77, 1024]
+                # # Text embedding
+                # text_embed = self.empty_text_embed.to(device).repeat(
+                #     (batch_size, 1, 1)
+                # )  # [B, 77, 1024]
+
+                # text_embed = ( working but slower
+                #     self.fixed_embed.to(device=device, dtype=self.model.dtype)
+                #     .repeat(batch_size, 1, 1)
+                # )  # [B, 77, 1024]
+
+                text_embed = self.fixed_embed.to(device=device, dtype=self.unet.dtype).expand(batch_size, -1, -1)
+
 
                 # Concat rgb and target latents
                 cat_latents = torch.cat(

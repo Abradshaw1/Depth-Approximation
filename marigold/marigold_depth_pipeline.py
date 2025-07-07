@@ -44,7 +44,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms.functional import pil_to_tensor, resize
 from tqdm.auto import tqdm
-from transformers import CLIPTextModel, CLIPTokenizer
+#from transformers import CLIPTextModel, CLIPTokenizer #no need anymore
 from typing import Dict, Optional, Union
 
 from .util.batchsize import find_batch_size
@@ -122,8 +122,12 @@ class MarigoldDepthPipeline(DiffusionPipeline):
         unet: UNet2DConditionModel,
         vae: AutoencoderKL,
         scheduler: Union[DDIMScheduler, LCMScheduler],
-        text_encoder: CLIPTextModel,
-        tokenizer: CLIPTokenizer,
+        #text_encoder: CLIPTextModel, #no need anymore
+        #tokenizer: CLIPTokenizer, #no need anymore
+        # -- CLIP-free variant --
+        fixed_embed_dim: int = 1024,
+        fixed_embed_len: int = 77,
+
         scale_invariant: Optional[bool] = True,
         shift_invariant: Optional[bool] = True,
         default_denoising_steps: Optional[int] = None,
@@ -134,8 +138,8 @@ class MarigoldDepthPipeline(DiffusionPipeline):
             unet=unet,
             vae=vae,
             scheduler=scheduler,
-            text_encoder=text_encoder,
-            tokenizer=tokenizer,
+            # text_encoder=text_encoder, #no need anymore
+            # tokenizer=tokenizer, # no nd need anymore
         )
         self.register_to_config(
             scale_invariant=scale_invariant,
@@ -149,7 +153,17 @@ class MarigoldDepthPipeline(DiffusionPipeline):
         self.default_denoising_steps = default_denoising_steps
         self.default_processing_resolution = default_processing_resolution
 
-        self.empty_text_embed = None
+        #self.empty_text_embed = None
+        # self.fixed_embed = torch.randn(1, fixed_embed_len, fixed_embed_dim)
+
+
+        # 1 × 77 × 1024 conditioning vector  owkring but slower
+        # stays in state_dict → reproducible results, but no gradients
+        self.fixed_embed = torch.nn.Parameter(          # <-- only change
+            torch.randn(1, fixed_embed_len, fixed_embed_dim, dtype=unet.dtype),
+            requires_grad=False
+        )
+
 
     @torch.no_grad()
     def __call__(
@@ -378,20 +392,20 @@ class MarigoldDepthPipeline(DiffusionPipeline):
         else:
             raise RuntimeError(f"Unsupported scheduler type: {type(self.scheduler)}")
 
-    def encode_empty_text(self):
-        """
-        Encode text embedding for empty prompt
-        """
-        prompt = ""
-        text_inputs = self.tokenizer(
-            prompt,
-            padding="do_not_pad",
-            max_length=self.tokenizer.model_max_length,
-            truncation=True,
-            return_tensors="pt",
-        )
-        text_input_ids = text_inputs.input_ids.to(self.text_encoder.device)
-        self.empty_text_embed = self.text_encoder(text_input_ids)[0].to(self.dtype)
+    # def encode_empty_text(self):   this is no longer needed if CLIP is not being used
+    #     """
+    #     Encode text embedding for empty prompt
+    #     """
+    #     prompt = ""
+    #     text_inputs = self.tokenizer(
+    #         prompt,
+    #         padding="do_not_pad",
+    #         max_length=self.tokenizer.model_max_length,
+    #         truncation=True,
+    #         return_tensors="pt",
+    #     )
+    #     text_input_ids = text_inputs.input_ids.to(self.text_encoder.device)
+    #     self.empty_text_embed = self.text_encoder(text_input_ids)[0].to(self.dtype)
 
     @torch.no_grad()
     def single_infer(
@@ -434,12 +448,22 @@ class MarigoldDepthPipeline(DiffusionPipeline):
             generator=generator,
         )  # [B, 4, h, w]
 
-        # Batched empty text embedding
-        if self.empty_text_embed is None:
-            self.encode_empty_text()
-        batch_empty_text_embed = self.empty_text_embed.repeat(
-            (rgb_latent.shape[0], 1, 1)
-        ).to(device)  # [B, 2, 1024]
+        # Batched empty text embedding    this was for CLIP when it was used
+        # if self.empty_text_embed is None:
+        #     self.encode_empty_text()
+        # batch_empty_text_embed = self.empty_text_embed.repeat(
+        #     (rgb_latent.shape[0], 1, 1)
+        # ).to(device)  # [B, 2, 1024]
+
+        #Fixed conditioning (no tokenizer/encoder) working but slower
+        # batch_empty_text_embed = (
+        #     self.fixed_embed.to(device=self.device, dtype=self.dtype)
+        #                   .repeat(rgb_latent.shape[0], 1, 1)
+        # )  # [B, 77, 1024]
+
+        batch_empty_text_embed = self.fixed_embed.expand(rgb_latent.shape[0], -1, -1).to(device=device, dtype=self.dtype)
+
+
 
         # Denoising loop
         if show_pbar:
