@@ -3,7 +3,7 @@ import torch
 from torchinfo import summary
 from torch.fx import symbolic_trace
 
-# Patch PYTHONPATH if run from root
+
 project_root = os.path.abspath(os.path.dirname(__file__))
 sys.path.insert(0, project_root)
 print("PYTHONPATH patched to:", project_root)

@@ -307,7 +307,7 @@ class MarigoldDepthTrainer:
                 #     .repeat(batch_size, 1, 1)
                 # )  # [B, 77, 1024]
 
-                text_embed = self.fixed_embed.to(device=device, dtype=self.unet.dtype).expand(batch_size, -1, -1)
+                text_embed = self.fixed_embed.to(device=device, dtype=self.model.unet.dtype).expand(batch_size, -1, -1)
 
 
                 # Concat rgb and target latents
@@ -638,7 +638,7 @@ class MarigoldDepthTrainer:
 
         # Save UNet
         unet_path = os.path.join(ckpt_dir, "unet")
-        self.model.unet.save_pretrained(unet_path, safe_serialization=True)
+        self.model.unet.save_pretrained(unet_path, safe_serialization=False)
         logging.info(f"UNet is saved to: {unet_path}")
 
         # Save scheduler

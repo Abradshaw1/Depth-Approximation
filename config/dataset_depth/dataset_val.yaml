@@ -25,7 +25,7 @@ dataset:
   # The first dataset is used to calculate main eval metric.
   - name: hypersim_depth
     disp_name: hypersim_depth_val_small_80
-    dir: hypersim/hypersim_processed_val.tar
+    dir: hypersim/val/
     filenames: data_split/hypersim_depth/filename_list_val_filtered_small_80.txt
     resize_to_hw:
     - 480
