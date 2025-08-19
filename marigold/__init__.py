@@ -32,10 +32,10 @@ from .marigold_depth_pipeline import (
     MarigoldDepthPipeline,
     MarigoldDepthOutput,  # noqa: F401
 )
-from .marigold_iid_pipeline import MarigoldIIDPipeline, MarigoldIIDOutput  # noqa: F401
-from .marigold_normals_pipeline import (
-    MarigoldNormalsPipeline,  # noqa: F401
-    MarigoldNormalsOutput,  # noqa: F401
-)
+# from .marigold_iid_pipeline import MarigoldIIDPipeline, MarigoldIIDOutput  # noqa: F401
+# from .marigold_normals_pipeline import (
+#     MarigoldNormalsPipeline,  # noqa: F401
+#     MarigoldNormalsOutput,  # noqa: F401
+# )
 
 MarigoldPipeline = MarigoldDepthPipeline  # for backward compatibility
