@@ -122,6 +122,13 @@ if "__main__" == __name__:
         help="Add datetime to the output folder name.",
     )
 
+    parser.add_argument(
+        "--enable_qat",
+        action="store_true",
+        default=False,
+        help="Enable QAT mode training.",
+    )
+
     args = parser.parse_args()
     resume_run = args.resume_run
     output_dir = args.output_dir
@@ -144,11 +151,16 @@ if "__main__" == __name__:
         job_name = os.path.basename(out_dir_run)
         # Resume config file
         cfg = OmegaConf.load(os.path.join(out_dir_run, "config.yaml"))
+        # Keep a runtime flag only (do not touch cfg)
+        qat_enabled = args.enable_qat
     else:
         # Run from start
         cfg = recursive_load_config(args.config)
         # Full job name
         pure_job_name = os.path.basename(args.config).split(".")[0]
+        qat_enabled = args.enable_qat
+        if qat_enabled:
+            pure_job_name = f"{pure_job_name}_qat"
         # Add time prefix
         if args.add_datetime_prefix:
             job_name = f"{t_start.strftime('%y_%m_%d-%H_%M_%S')}-{pure_job_name}"
@@ -161,6 +173,23 @@ if "__main__" == __name__:
         else:
             out_dir_run = os.path.join("./output", job_name)
         os.makedirs(out_dir_run, exist_ok=False)
+
+    # Check QAT compatibility
+    if resume_run is not None:
+        qat_sd_path = os.path.join(resume_run, "unet_qat_state_dict.pt")
+        has_qat_ckpt = os.path.isfile(qat_sd_path)
+
+        if args.enable_qat and not has_qat_ckpt:
+            raise RuntimeError(
+                "You passed --enable_qat together with --resume_run, but the checkpoint "
+                "does NOT contain 'unet_qat_state_dict.pt'. Resuming FP32 -> QAT is NOT supported."
+            )
+        if (not args.enable_qat) and has_qat_ckpt:
+            raise RuntimeError(
+                "You are resuming a QAT checkpoint without --enable_qat. "
+                "Please add --enable_qat or resume from a pure FP32 checkpoint."
+            )
+
 
     cfg_data = cfg.dataset
 
@@ -181,6 +210,7 @@ if "__main__" == __name__:
     # -------------------- Logging settings --------------------
     config_logging(cfg.logging, out_dir=out_dir_run)
     logging.debug(f"config: {cfg}")
+    logging.debug(f"QAT enabled: {qat_enabled}")
 
     # Initialize wandb
     if not args.no_wandb:
@@ -366,6 +396,7 @@ if "__main__" == __name__:
         accumulation_steps=accumulation_steps,
         val_dataloaders=val_loaders,
         vis_dataloaders=vis_loaders,
+        qat_enabled=qat_enabled
     )
 
     # -------------------- Checkpoint --------------------

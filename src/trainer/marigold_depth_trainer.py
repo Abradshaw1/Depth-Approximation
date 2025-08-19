@@ -55,6 +55,7 @@ from src.util.lr_scheduler import IterExponential
 from src.util.metric import MetricTracker
 from src.util.multi_res_noise import multi_res_noise_like
 from src.util.seeding import generate_seed_sequence
+from src.util.depth_UNET_QAT import make_unet_qat_ready, quick_qat_probe, _qat_signature, _log_qat_status
 
 
 class MarigoldDepthTrainer:
@@ -70,6 +71,7 @@ class MarigoldDepthTrainer:
         accumulation_steps: int,
         val_dataloaders: List[DataLoader] = None,
         vis_dataloaders: List[DataLoader] = None,
+        qat_enabled: bool = False,
     ):
         self.cfg: OmegaConf = cfg
         self.model: MarigoldDepthPipeline = model
@@ -84,6 +86,7 @@ class MarigoldDepthTrainer:
         self.val_loaders: List[DataLoader] = val_dataloaders
         self.vis_loaders: List[DataLoader] = vis_dataloaders
         self.accumulation_steps: int = accumulation_steps
+        self.qat_enabled: bool = qat_enabled
 
         # Adapt input layers
         if 8 != self.model.unet.config["in_channels"]:
@@ -96,8 +99,14 @@ class MarigoldDepthTrainer:
         # fixed conditioning (no tokenizer/encoder)
         self.fixed_embed = self.model.fixed_embed.to(device)
 
-        self.model.unet.enable_xformers_memory_efficient_attention()
-
+        # xFormers attention is not quant-friendly; skip if QAT
+        if not self.qat_enabled:
+            self.model.unet.enable_xformers_memory_efficient_attention()
+        
+        if self.qat_enabled:
+            self.model.unet = make_unet_qat_ready(self.model.unet)
+            quick_qat_probe(self.model.unet)
+   
         # Trainability
         self.model.vae.requires_grad_(False)
         #self.model.text_encoder.requires_grad_(False) for CLIP
@@ -462,6 +471,10 @@ class MarigoldDepthTrainer:
             self.visualize()
 
     def validate(self):
+
+        if self.qat_enabled:
+            _log_qat_status(self, "validate.start")
+
         for i, val_loader in enumerate(self.val_loaders):
             val_dataset_name = val_loader.dataset.disp_name
             val_metric_dict = self.validate_single_dataset(
@@ -636,10 +649,22 @@ class MarigoldDepthTrainer:
             os.rename(ckpt_dir, temp_ckpt_dir)
             logging.debug(f"Old checkpoint is backed up at: {temp_ckpt_dir}")
 
-        # Save UNet
-        unet_path = os.path.join(ckpt_dir, "unet")
-        self.model.unet.save_pretrained(unet_path, safe_serialization=False)
-        logging.info(f"UNet is saved to: {unet_path}")
+        if self.qat_enabled:
+            os.makedirs(ckpt_dir, exist_ok=True)
+            torch.save(
+                self.model.unet.state_dict(),
+                os.path.join(ckpt_dir, "unet_qat_state_dict.pt"),
+            )
+            logging.info("QAT UNet state_dict saved.")
+        else:
+            unet_path = os.path.join(ckpt_dir, "unet")
+            self.model.unet.save_pretrained(unet_path, safe_serialization=False)
+            logging.info(f"UNet is saved to: {unet_path}")
+
+        # # Save UNet
+        # unet_path = os.path.join(ckpt_dir, "unet")
+        # self.model.unet.save_pretrained(unet_path, safe_serialization=False)
+        # logging.info(f"UNet is saved to: {unet_path}")
 
         # Save scheduler
         scheduelr_path = os.path.join(ckpt_dir, "scheduler")
@@ -657,6 +682,7 @@ class MarigoldDepthTrainer:
                 "best_metric": self.best_metric,
                 "in_evaluation": self.in_evaluation,
                 "global_seed_sequence": self.global_seed_sequence,
+                "qat_enabled": self.qat_enabled,
             }
             train_state_path = os.path.join(ckpt_dir, "trainer.ckpt")
             torch.save(state, train_state_path)
@@ -675,13 +701,43 @@ class MarigoldDepthTrainer:
         self, ckpt_path, load_trainer_state=True, resume_lr_scheduler=True
     ):
         logging.info(f"Loading checkpoint from: {ckpt_path}")
+        # # Load UNet
+        # _model_path = os.path.join(ckpt_path, "unet", "diffusion_pytorch_model.bin")
+        # self.model.unet.load_state_dict(
+        #     torch.load(_model_path, map_location=self.device)
+        # )
+        # self.model.unet.to(self.device)
+        # logging.info(f"UNet parameters are loaded from {_model_path}")
+
+        # ---- Defensive policy check (INSERTED) ----
+        qat_marker = os.path.isfile(os.path.join(ckpt_path, "unet_qat_state_dict.pt"))
+        if self.qat_enabled and not qat_marker:
+            raise RuntimeError(
+                "Self is in QAT mode but checkpoint is FP32 (no 'unet_qat_state_dict.pt'). "
+                "Resuming FP32 -> QAT is not supported."
+            )
+        if (not self.qat_enabled) and qat_marker:
+            raise RuntimeError(
+                "Checkpoint is QAT (has 'unet_qat_state_dict.pt') but self is not in QAT mode. "
+                "Please resume with --enable_qat."
+            )
+
         # Load UNet
-        _model_path = os.path.join(ckpt_path, "unet", "diffusion_pytorch_model.bin")
-        self.model.unet.load_state_dict(
-            torch.load(_model_path, map_location=self.device)
-        )
-        self.model.unet.to(self.device)
-        logging.info(f"UNet parameters are loaded from {_model_path}")
+        if self.qat_enabled:
+            # Rebuild QAT graph (sanitize + prepare)
+            self.model.unet = make_unet_qat_ready(self.model.unet)
+            qat_sd_path = os.path.join(ckpt_path, "unet_qat_state_dict.pt")
+            state = torch.load(qat_sd_path, map_location=self.device)
+            self.model.unet.load_state_dict(state)
+            self.model.unet.to(self.device)
+            logging.info(f"QAT UNet parameters loaded from {qat_sd_path}")
+        else:
+            _model_path = os.path.join(ckpt_path, "unet", "diffusion_pytorch_model.bin")
+            self.model.unet.load_state_dict(
+                torch.load(_model_path, map_location=self.device)
+            )
+            self.model.unet.to(self.device)
+            logging.info(f"UNet parameters are loaded from {_model_path}")
 
         # Load training states
         if load_trainer_state:
