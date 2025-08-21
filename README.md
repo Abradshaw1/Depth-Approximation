@@ -1,7 +1,6 @@
 # Marigold Computer Vision
 
-This is an pruned adn quantized implpenentaiton of Marigold, a fidudison trinaing reoutine devleipe by colaabroatioes at ETH Zurich
-
+This is a pruned and quantized implementation of Marigold, a diffusion-based training and evaluation routine developed by collaborators at ETH Zurich
 
 ### 📦 Repository
 
